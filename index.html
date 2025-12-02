@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>北高 360 完賽配速與補給計算機</title>
     
-    <!-- 1. 引入 Tailwind CSS (樣式) -->
+    <!-- 1. 引入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- 2. 引入 Babel (讓瀏覽器可以讀懂 React) -->
+    <!-- 2. 引入 Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- 3. 設定 Import Map (告訴瀏覽器去哪裡抓 React 套件) -->
+    <!-- 3. 設定 Import Map -->
     <script type="importmap">
     {
         "imports": {
@@ -22,32 +22,23 @@
     }
     </script>
     
-    <!-- 設定 Tailwind 的字型 -->
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; }
-        
-        /* 簡單的淡入動畫 */
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        .animate-fade-in {
-            animation: fadeIn 0.5s ease-out forwards;
-        }
+        .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
 
-    <!-- 4. 主要程式碼邏輯 -->
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect } from 'react';
         import { createRoot } from 'react-dom/client';
-        // 從 CDN 引入圖示
-        import { Upload, Wind, Utensils, Zap, Clock, Bike, AlertCircle, PlayCircle, FileText, CheckCircle } from 'lucide-react';
-
-        // --- 這裡開始是原本的 React 程式碼 ---
+        import { Upload, Wind, Utensils, Zap, Clock, Bike, AlertCircle, PlayCircle, FileText, CheckCircle, Edit3 } from 'lucide-react';
 
         const SEGMENTS = [
             { id: 1, name: "第一段：關渡 → 新竹代天府", start: 0, end: 75.5, note: "西濱起點，體力充沛" },
@@ -83,33 +74,202 @@
                 startTime: "00:00",
             });
 
+            // 檔案狀態與手動輸入模式
             const [fileStatus, setFileStatus] = useState({
                 fileName: null,
                 isReady: false,
                 fileType: null,
-                baseSpeed: 0
+                baseSpeed: 0,
+                totalDist: 0, 
+                totalTime: 0 
             });
+
+            const [manualMode, setManualMode] = useState(false);
+            const [manualSpeed, setManualSpeed] = useState(25);
 
             const [results, setResults] = useState(null);
             const [activeTab, setActiveTab] = useState('summary');
             const [isProcessing, setIsProcessing] = useState(false);
+            const [errorMsg, setErrorMsg] = useState(null);
+
+            // --- 強化版 GPX 解析邏輯 ---
+            const parseGPX = (xmlDoc) => {
+                // 1. 強力搜尋所有節點，忽略 Namespace 前綴 (例如 gpx:trkpt -> trkpt)
+                const getAllPoints = () => {
+                    const allElements = xmlDoc.getElementsByTagName("*");
+                    const pts = [];
+                    for (let i = 0; i < allElements.length; i++) {
+                        // 使用 localName (如果支援) 或 nodeName 來判斷
+                        // nodeName 可能會包含前綴 (如 gpx:trkpt)，所以要 split
+                        let tagName = allElements[i].localName;
+                        if (!tagName) {
+                            const parts = allElements[i].nodeName.split(':');
+                            tagName = parts[parts.length - 1]; // 取最後一段
+                        }
+                        
+                        tagName = tagName.toLowerCase();
+                        if (tagName === 'trkpt' || tagName === 'rtept') {
+                            pts.push(allElements[i]);
+                        }
+                    }
+                    return pts;
+                };
+
+                let points = getAllPoints();
+
+                // 2. 備用方案：如果上面找不到，嘗試標準 DOM 方法
+                if (points.length === 0) {
+                     const trkpts = xmlDoc.getElementsByTagName("trkpt");
+                     if (trkpts.length > 0) {
+                        for(let i=0; i<trkpts.length; i++) points.push(trkpts[i]);
+                     } else {
+                        const rtepts = xmlDoc.getElementsByTagName("rtept");
+                        for(let i=0; i<rtepts.length; i++) points.push(rtepts[i]);
+                     }
+                }
+
+                if (points.length < 2) {
+                    throw new Error("找不到軌跡點 (Track Points)。請確認這是一個騎乘紀錄檔，而非僅有地標 (Waypoints)。");
+                }
+
+                let totalDist = 0;
+                let totalMovingTime = 0;
+                let lastLat = null;
+                let lastLon = null;
+                let lastTime = null;
+                let pointsFound = 0;
+
+                // 3. 遍歷所有點
+                for (let i = 0; i < points.length; i++) {
+                    const pt = points[i];
+                    
+                    // 取得座標
+                    const lat = parseFloat(pt.getAttribute("lat"));
+                    const lon = parseFloat(pt.getAttribute("lon"));
+                    
+                    if (isNaN(lat) || isNaN(lon)) continue;
+
+                    // 取得時間 (容錯處理：遞迴尋找子節點中的 time)
+                    let timeStr = null;
+                    
+                    // 優先找直屬
+                    for(let child of pt.childNodes) {
+                        // 處理 element node
+                        if (child.nodeType === 1) { 
+                             let childTagName = child.localName;
+                             if (!childTagName) {
+                                const parts = child.nodeName.split(':');
+                                childTagName = parts[parts.length - 1];
+                             }
+                             if (childTagName.toLowerCase() === 'time') {
+                                 timeStr = child.textContent;
+                                 break;
+                             }
+                        }
+                    }
+
+                    // 如果沒找到，嘗試 getElementsByTagName (但在 XML DOM 中這會找所有後代)
+                    if (!timeStr) {
+                         const timeNodes = pt.getElementsByTagName("*"); // 找所有後代
+                         for(let j=0; j<timeNodes.length; j++) {
+                             let tName = timeNodes[j].localName;
+                             if(!tName) {
+                                 const parts = timeNodes[j].nodeName.split(':');
+                                 tName = parts[parts.length - 1];
+                             }
+                             if(tName.toLowerCase() === 'time') {
+                                 timeStr = timeNodes[j].textContent;
+                                 break; 
+                             }
+                         }
+                    }
+
+                    if (!timeStr) {
+                        continue;
+                    }
+
+                    const time = new Date(timeStr).getTime();
+                    if (isNaN(time)) continue;
+
+                    pointsFound++;
+
+                    // 如果是有效的第一點
+                    if (lastLat === null) {
+                        lastLat = lat;
+                        lastLon = lon;
+                        lastTime = time;
+                        continue;
+                    }
+
+                    // 計算距離與時間差
+                    const timeDiff = (time - lastTime) / 1000; // seconds
+                    
+                    // 忽略時間倒退或重複的點
+                    if (timeDiff <= 0) continue;
+
+                    // Haversine
+                    const R = 6371; 
+                    const dLat = (lat - lastLat) * Math.PI / 180;
+                    const dLon = (lon - lastLon) * Math.PI / 180;
+                    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                              Math.cos(lastLat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
+                              Math.sin(dLon/2) * Math.sin(dLon/2);
+                    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                    const dist = R * c; // km
+
+                    if (dist > 0) {
+                        const speed = (dist / (timeDiff / 3600)); // km/h
+                        
+                        // 過濾邏輯
+                        if (speed > 1 && speed < 120 && timeDiff < 600) {
+                            totalDist += dist;
+                            totalMovingTime += timeDiff;
+                        }
+                    }
+
+                    lastLat = lat;
+                    lastLon = lon;
+                    lastTime = time;
+                }
+
+                if (pointsFound < 5) {
+                     // 放寬條件，只要有5個點就算
+                     throw new Error(`有效時間點太少 (${pointsFound} 點)。GPX 可能缺少 time 標籤或格式不符。`);
+                }
+
+                if (totalDist === 0 || totalMovingTime === 0) {
+                    throw new Error("無法計算移動距離。數據看似皆為靜止或無效。");
+                }
+
+                const avgSpeed = totalDist / (totalMovingTime / 3600);
+                return { 
+                    speed: parseFloat(avgSpeed.toFixed(1)),
+                    dist: parseFloat(totalDist.toFixed(1)),
+                    time: totalMovingTime
+                };
+            };
 
             const handleFileUpload = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
 
                 setResults(null);
+                setErrorMsg(null);
                 setIsProcessing(true);
+                setManualMode(false);
 
                 const fileName = file.name.toLowerCase();
                 
                 if (fileName.endsWith('.fit')) {
+                    // FIT 模擬
                     setTimeout(() => {
                         setFileStatus({
                             fileName: file.name,
                             isReady: true,
                             fileType: 'fit',
-                            baseSpeed: 30.0 
+                            baseSpeed: 30.0,
+                            totalDist: 50.5,
+                            totalTime: 6060 // seconds
                         });
                         setIsProcessing(false);
                     }, 800);
@@ -119,101 +279,84 @@
                     reader.onload = (e) => {
                         try {
                             const parser = new DOMParser();
-                            const xmlDoc = parser.parseFromString(e.target.result, "text/xml");
-                            const trkpts = xmlDoc.getElementsByTagName("trkpt");
                             
-                            if (trkpts.length < 2) {
-                                alert("GPX 檔案無效或點數過少");
-                                setIsProcessing(false);
-                                return;
+                            // *** 修正: 移除 BOM (Byte Order Mark) 防止解析失敗 ***
+                            let xmlContent = e.target.result; 
+                            if (xmlContent.charCodeAt(0) === 0xFEFF) {
+                                xmlContent = xmlContent.slice(1);
                             }
 
-                            let totalDist = 0;
-                            let totalMovingTime = 0;
-                            let lastLat = parseFloat(trkpts[0].getAttribute("lat"));
-                            let lastLon = parseFloat(trkpts[0].getAttribute("lon"));
-                            let lastTime = new Date(trkpts[0].getElementsByTagName("time")[0].textContent).getTime();
-
-                            for (let i = 1; i < trkpts.length; i++) {
-                                const lat = parseFloat(trkpts[i].getAttribute("lat"));
-                                const lon = parseFloat(trkpts[i].getAttribute("lon"));
-                                const timeStr = trkpts[i].getElementsByTagName("time")[0]?.textContent;
-                                
-                                if (!timeStr) continue;
-                                
-                                const time = new Date(timeStr).getTime();
-                                const timeDiff = (time - lastTime) / 1000;
-
-                                const R = 6371; 
-                                const dLat = (lat - lastLat) * Math.PI / 180;
-                                const dLon = (lon - lastLon) * Math.PI / 180;
-                                const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                                        Math.cos(lastLat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
-                                        Math.sin(dLon/2) * Math.sin(dLon/2);
-                                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-                                const dist = R * c;
-
-                                if (dist > 0) {
-                                    const speed = (dist / (timeDiff / 3600));
-                                    if (speed > 3 && speed < 100 && timeDiff < 120) {
-                                        totalDist += dist;
-                                        totalMovingTime += timeDiff;
-                                    }
-                                }
-
-                                lastLat = lat;
-                                lastLon = lon;
-                                lastTime = time;
-                            }
-
-                            const calculatedAvgSpeed = totalDist / (totalMovingTime / 3600);
+                            const xmlDoc = parser.parseFromString(xmlContent, "text/xml");
                             
-                            if (isNaN(calculatedAvgSpeed) || calculatedAvgSpeed < 5) {
-                                alert("無法從 GPX 計算有效速度，請確認檔案。");
-                                setIsProcessing(false);
-                                return;
+                            const parserError = xmlDoc.getElementsByTagName("parsererror");
+                            if (parserError.length > 0) {
+                                console.warn("XML Parser Warning:", parserError[0].textContent);
                             }
+
+                            const result = parseGPX(xmlDoc);
 
                             setFileStatus({
                                 fileName: file.name,
                                 isReady: true,
                                 fileType: 'gpx',
-                                baseSpeed: parseFloat(calculatedAvgSpeed.toFixed(1))
+                                baseSpeed: result.speed,
+                                totalDist: result.dist,
+                                totalTime: result.time
                             });
                             setIsProcessing(false);
 
                         } catch (err) {
                             console.error(err);
-                            alert("GPX 解析失敗，請確認檔案格式。");
+                            setErrorMsg(`解析失敗: ${err.message}`);
                             setIsProcessing(false);
                         }
                     };
+                    reader.onerror = () => {
+                        setErrorMsg("讀取檔案時發生錯誤");
+                        setIsProcessing(false);
+                    };
                     reader.readAsText(file);
                 } else {
-                    alert("不支援的檔案格式，請上傳 .fit");
+                    setErrorMsg("不支援的檔案格式，請上傳 .gpx 或 .fit");
                     setIsProcessing(false);
                 }
             };
 
             const useDemoData = () => {
                 setResults(null);
+                setErrorMsg(null);
+                setManualMode(false);
                 setFileStatus({
                     fileName: "Demo_Ride_Data.gpx (模擬數據)",
                     isReady: true,
                     fileType: 'demo',
-                    baseSpeed: 28.5
+                    baseSpeed: 28.5,
+                    totalDist: 40.0,
+                    totalTime: 5052
                 });
             };
 
+            const toggleManualMode = () => {
+                setManualMode(!manualMode);
+                setFileStatus({ fileName: null, isReady: false, fileType: null, baseSpeed: 0, totalDist: 0, totalTime: 0 });
+                setResults(null);
+                setErrorMsg(null);
+            };
+
             const generateReport = () => {
-                if (!fileStatus.isReady) return;
+                const baseSpeedToUse = manualMode ? parseFloat(manualSpeed) : fileStatus.baseSpeed;
+
+                if (!baseSpeedToUse || baseSpeedToUse <= 0) {
+                    alert("無效的速度數據");
+                    return;
+                }
 
                 let windFactor = 0;
                 if (config.windDirection === 'tail') windFactor = config.windSpeed * 0.25; 
                 if (config.windDirection === 'head') windFactor = -(config.windSpeed * 0.4); 
                 if (config.windDirection === 'side') windFactor = -(config.windSpeed * 0.05);
 
-                const adjustedBaseSpeed = fileStatus.baseSpeed + windFactor;
+                const adjustedBaseSpeed = baseSpeedToUse + windFactor;
 
                 let currentTimeInHours = 0; 
                 let cumulativeDist = 0;
@@ -308,6 +451,7 @@
                         totalTimeHours: totalTime.toFixed(1),
                         finishTime: new Date(startDate.getTime() + totalTime * 3600 * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false}),
                         avgSpeed: (367.6 / totalTime).toFixed(1),
+                        baseSpeedUsed: baseSpeedToUse, 
                         totalNeeds: {
                             carbs: Math.ceil(totalCarbs),
                             water: Math.ceil(totalWater / 1000 * 10) / 10,
@@ -329,6 +473,12 @@
                 const minutes = Math.floor((totalHours - hours) * 60);
                 return `${hours}小時 ${minutes}分`;
             };
+            
+            const formatSecondsToDuration = (seconds) => {
+                const h = Math.floor(seconds / 3600);
+                const m = Math.floor((seconds % 3600) / 60);
+                return `${h}小時 ${m}分`;
+            };
 
             const handleConfigChange = (e) => {
                 const { name, value } = e.target;
@@ -347,7 +497,7 @@
                         </div>
                     </div>
                     <div className="text-right text-blue-100 text-sm">
-                        版本: 2.1 (單一檔案版)
+                        版本: 2.4 (增強 XML 相容性)
                     </div>
                     </div>
                 </header>
@@ -358,68 +508,118 @@
                     
                     <div className="md:col-span-5 space-y-4">
                         <div className={`p-5 rounded-xl shadow-sm border transition-all ${fileStatus.isReady ? 'bg-green-50 border-green-200' : 'bg-white border-slate-200'}`}>
-                        <h2 className="text-lg font-semibold flex items-center gap-2 mb-4 text-slate-800">
-                            <Upload size={20} className={fileStatus.isReady ? "text-green-600" : "text-blue-600"} />
-                            1. 上傳騎乘紀錄
-                        </h2>
-                        
-                        {!fileStatus.isReady ? (
-                            <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center hover:bg-slate-50 transition-colors relative">
-                                <input 
-                                type="file" 
-                                accept=".gpx,.fit" 
-                                onChange={handleFileUpload} 
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                disabled={isProcessing}
-                                />
-                                <div className="space-y-2">
-                                <div className="text-slate-400 mx-auto w-10 h-10 flex items-center justify-center">
-                                    {isProcessing ? <Clock className="animate-spin text-blue-500" /> : <Upload />}
-                                </div>
-                                <p className="text-sm font-medium text-slate-600">
-                                    {isProcessing ? "檔案分析中..." : "點擊上傳 GPX 或 FIT"}
-                                </p>
-                                <p className="text-xs text-slate-400">
-                                    支援 Garmin/Strava 匯出之檔案
-                                </p>
-                                </div>
-                            </div>
-                        ) : (
-                            <div className="space-y-3">
-                                <div className="flex items-start gap-3 bg-white/60 p-3 rounded-lg border border-green-100">
-                                    <FileText className="text-green-600 mt-1" size={20} />
-                                    <div>
-                                        <div className="font-bold text-green-800">檔案讀取成功</div>
-                                        <div className="text-sm text-green-700 break-all">{fileStatus.fileName}</div>
-                                        <div className="text-xs text-green-600 mt-1">
-                                            {fileStatus.fileType === 'fit' ? 
-                                                "(FIT 檔已模擬讀取，使用標準估計值)" : 
-                                                `(分析基準均速: ${fileStatus.baseSpeed} km/h)`}
-                                        </div>
-                                    </div>
-                                </div>
+                            <div className="flex justify-between items-start mb-4">
+                                <h2 className="text-lg font-semibold flex items-center gap-2 text-slate-800">
+                                    <Upload size={20} className={fileStatus.isReady ? "text-green-600" : "text-blue-600"} />
+                                    1. 能力分析
+                                </h2>
                                 <button 
-                                    onClick={() => {
-                                        setFileStatus({ fileName: null, isReady: false, fileType: null, baseSpeed: 0 });
-                                        setResults(null);
-                                    }}
-                                    className="text-xs text-slate-500 underline hover:text-slate-700 w-full text-center"
+                                    onClick={toggleManualMode}
+                                    className="text-xs text-blue-600 hover:text-blue-800 underline flex items-center gap-1"
                                 >
-                                    重新上傳檔案
+                                    {manualMode ? "切換回檔案上傳" : "無法上傳？手動輸入"}
                                 </button>
                             </div>
-                        )}
-
-                        {!fileStatus.isReady && !isProcessing && (
-                            <div className="mt-4 text-center">
-                            <span className="text-sm text-slate-500">或是</span>
-                            <button 
-                                onClick={useDemoData}
-                                className="ml-2 text-sm text-blue-600 font-semibold hover:underline"
-                            >
-                                使用範例數據試算
-                            </button>
+                        
+                        {manualMode ? (
+                            <div className="bg-orange-50 p-4 rounded-lg border border-orange-100 animate-fade-in">
+                                <label className="block text-sm font-bold text-orange-800 mb-2">
+                                    手動輸入您的平路均速 (km/h)
+                                </label>
+                                <div className="flex items-center gap-2">
+                                    <input 
+                                        type="number" 
+                                        value={manualSpeed}
+                                        onChange={(e) => setManualSpeed(e.target.value)}
+                                        className="w-full p-3 text-lg border border-orange-200 rounded-md focus:ring-2 focus:ring-orange-400 outline-none"
+                                        placeholder="例如: 30"
+                                    />
+                                    <span className="text-orange-700 font-bold">km/h</span>
+                                </div>
+                                <p className="text-xs text-orange-600 mt-2">
+                                    * 請輸入您在「長距離平路」能維持的平均速度，系統將以此推算北高成績。
+                                </p>
                             </div>
+                        ) : (
+                            <>
+                                {!fileStatus.isReady ? (
+                                    <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center hover:bg-slate-50 transition-colors relative">
+                                        <input 
+                                        type="file" 
+                                        accept=".gpx,.fit" 
+                                        onChange={handleFileUpload} 
+                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                        disabled={isProcessing}
+                                        />
+                                        <div className="space-y-2">
+                                        <div className="text-slate-400 mx-auto w-10 h-10 flex items-center justify-center">
+                                            {isProcessing ? <Clock className="animate-spin text-blue-500" /> : <Upload />}
+                                        </div>
+                                        <p className="text-sm font-medium text-slate-600">
+                                            {isProcessing ? "正在深度分析檔案..." : "點擊上傳 GPX 或 FIT"}
+                                        </p>
+                                        <p className="text-xs text-slate-400">
+                                            系統將分析此檔案的移動速度
+                                        </p>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3 animate-fade-in">
+                                        <div className="bg-white/80 p-4 rounded-lg border border-green-200 shadow-sm">
+                                            <div className="flex items-center gap-2 mb-2 text-green-700">
+                                                <CheckCircle size={18} />
+                                                <span className="font-bold">檔案分析完成</span>
+                                            </div>
+                                            <div className="text-sm text-slate-600 mb-2 break-all font-mono bg-slate-50 p-1 rounded">
+                                                {fileStatus.fileName}
+                                            </div>
+                                            
+                                            <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-green-100">
+                                                <div>
+                                                    <div className="text-xs text-slate-500">總移動距離</div>
+                                                    <div className="font-bold text-slate-800">{fileStatus.totalDist} km</div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-xs text-slate-500">總移動時間</div>
+                                                    <div className="font-bold text-slate-800">{formatSecondsToDuration(fileStatus.totalTime)}</div>
+                                                </div>
+                                                <div className="col-span-2 bg-green-50 p-2 rounded text-center mt-1">
+                                                    <div className="text-xs text-green-600">分析出的基準均速</div>
+                                                    <div className="text-2xl font-bold text-green-700">{fileStatus.baseSpeed} <span className="text-sm font-normal">km/h</span></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={() => {
+                                                setFileStatus({ fileName: null, isReady: false, fileType: null, baseSpeed: 0, totalDist: 0, totalTime: 0 });
+                                                setResults(null);
+                                            }}
+                                            className="text-xs text-slate-500 underline hover:text-slate-700 w-full text-center"
+                                        >
+                                            更換檔案
+                                        </button>
+                                    </div>
+                                )}
+
+                                {errorMsg && (
+                                    <div className="bg-red-50 text-red-600 p-3 rounded-md text-sm flex items-start gap-2 mt-2">
+                                        <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                                        <span>{errorMsg}</span>
+                                    </div>
+                                )}
+
+                                {!fileStatus.isReady && !isProcessing && !errorMsg && (
+                                    <div className="mt-4 text-center">
+                                    <span className="text-sm text-slate-500">或是</span>
+                                    <button 
+                                        onClick={useDemoData}
+                                        className="ml-2 text-sm text-blue-600 font-semibold hover:underline"
+                                    >
+                                        使用範例數據試算
+                                    </button>
+                                    </div>
+                                )}
+                            </>
                         )}
                         </div>
 
@@ -541,10 +741,10 @@
                         <div className="bg-slate-100 p-4 rounded-xl border border-slate-200 flex flex-col items-center justify-center text-center">
                             <button
                                 onClick={generateReport}
-                                disabled={!fileStatus.isReady}
+                                disabled={!fileStatus.isReady && !manualMode}
                                 className={`
                                     w-full md:w-auto px-8 py-4 rounded-full font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all transform
-                                    ${fileStatus.isReady 
+                                    ${(fileStatus.isReady || manualMode)
                                         ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:scale-105 hover:shadow-blue-500/30 cursor-pointer' 
                                         : 'bg-slate-300 text-slate-500 cursor-not-allowed'}
                                 `}
@@ -552,7 +752,7 @@
                                 <PlayCircle size={24} />
                                 {results ? "重新計算數據" : "開始分析並產生報告"}
                             </button>
-                            {!fileStatus.isReady && (
+                            {!fileStatus.isReady && !manualMode && (
                                 <p className="text-xs text-slate-400 mt-2">請先完成步驟 1 上傳檔案</p>
                             )}
                         </div>
@@ -600,9 +800,9 @@
                             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                                 <div className="text-slate-500 text-sm font-medium mb-1">全程平均均速</div>
                                 <div className="text-3xl font-bold text-slate-800 mb-2">{results.summary.avgSpeed} <span className="text-lg font-normal text-slate-500">km/h</span></div>
-                                <div className="flex items-center gap-1 text-xs text-orange-600">
-                                <AlertCircle size={12} />
-                                <span>{results.summary.fatigueWarning}k 後體力顯著下滑</span>
+                                <div className="text-xs text-slate-500 border-t pt-2 mt-2">
+                                    基於能力: <span className="font-bold">{results.summary.baseSpeedUsed} km/h</span><br/>
+                                    (風阻/疲勞修正後)
                                 </div>
                             </div>
 
@@ -736,4 +936,3 @@
     </script>
 </body>
 </html>
-
