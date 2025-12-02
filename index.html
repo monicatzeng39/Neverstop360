@@ -1,729 +1,738 @@
-import React, { useState, useEffect } from 'react';
-import { Upload, Wind, Utensils, Zap, Clock, Bike, AlertCircle, PlayCircle, FileText, CheckCircle } from 'lucide-react';
-
-// --- 預設常數與資料 ---
-
-// 北高360 分段定義
-const SEGMENTS = [
-  { id: 1, name: "第一段：關渡 → 新竹代天府", start: 0, end: 75.5, note: "西濱起點，體力充沛" },
-  { id: 2, name: "第二段：新竹代天府 → 伸港寶天宮", start: 75.5, end: 168, note: "經苗栗後龍坡，進入台中" },
-  { id: 3, name: "第三段：伸港寶天宮 → 布袋大眾廟", start: 168, end: 275, note: "彰化雲林嘉義平路，無盡的黑暗路段" },
-  { id: 4, name: "第四段：布袋大眾廟 → 左營大義國中", start: 275, end: 367.6, note: "台南市區紅綠燈與最後的意志力" }
-];
-
-// 預設補給建議點
-const STOPS = [
-  { name: "新竹代天府", km: 75.5, type: "宮廟/便利商店" },
-  { name: "伸港寶天宮", km: 168, type: "宮廟/補給車" },
-  { name: "布袋大眾廟", km: 275, type: "宮廟/便利商店" },
-  { name: "楠梓 (麥當勞/超商)", km: 340, type: "市區補給點" },
-  { name: "終點 (大義國中)", km: 367.6, type: "終點" }
-];
-
-// 補給建議選單
-const FOOD_SUGGESTIONS = {
-  early: "飯糰、三明治、香蕉 (固態為主)",
-  mid: "麵包、蛋糕、果膠、BCAA (固液並重)",
-  late: "可樂、流質食物、果膠、咖啡因 (快速吸收)",
-  recovery: "巧克力牛奶、豆漿、雞胸肉"
-};
-
-const BeiGaoPlanner = () => {
-  // --- 狀態管理 ---
-  
-  // 使用者設定
-  const [config, setConfig] = useState({
-    carbsPerHour: 70, // g
-    waterPerHour: 600, // ml
-    sodiumPerHour: 500, // mg
-    carbsPerGel: 25, // g
-    sodiumPerPill: 300, // mg
-    windDirection: 'tail', // tail, head, side, none
-    windSpeed: 15, // km/h
-    startTime: "00:00", // 出發時間
-  });
-
-  // 檔案與能力狀態
-  const [fileStatus, setFileStatus] = useState({
-    fileName: null,
-    isReady: false,
-    fileType: null, // 'gpx' or 'fit' or 'demo'
-    baseSpeed: 0
-  });
-
-  // 計算結果
-  const [results, setResults] = useState(null);
-  const [activeTab, setActiveTab] = useState('summary');
-  const [isProcessing, setIsProcessing] = useState(false);
-
-  // --- 邏輯處理 ---
-
-  // 1. 檔案上傳處理
-  const handleFileUpload = (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    // 重置之前的結果
-    setResults(null);
-    setIsProcessing(true);
-
-    const fileName = file.name.toLowerCase();
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>北高 360 完賽配速與補給計算機</title>
     
-    if (fileName.endsWith('.fit')) {
-      // FIT 檔案處理 (模擬)
-      // 由於瀏覽器環境無 external libraries 解析二進位 FIT，這裡採用模擬策略
-      setTimeout(() => {
-        setFileStatus({
-          fileName: file.name,
-          isReady: true,
-          fileType: 'fit',
-          baseSpeed: 30.0 // 給予一個較高的預設值，模擬 FIT 用戶通常有功率計且能力較好
-        });
-        setIsProcessing(false);
-      }, 800);
-      
-    } else if (fileName.endsWith('.gpx')) {
-      // GPX 檔案處理 (真實解析)
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(e.target.result, "text/xml");
-          const trkpts = xmlDoc.getElementsByTagName("trkpt");
-          
-          if (trkpts.length < 2) {
-            alert("GPX 檔案無效或點數過少");
-            setIsProcessing(false);
-            return;
-          }
+    <!-- 1. 引入 Tailwind CSS (樣式) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. 引入 Babel (讓瀏覽器可以讀懂 React) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-          let totalDist = 0;
-          let totalMovingTime = 0; // seconds
-          let lastLat = parseFloat(trkpts[0].getAttribute("lat"));
-          let lastLon = parseFloat(trkpts[0].getAttribute("lon"));
-          let lastTime = new Date(trkpts[0].getElementsByTagName("time")[0].textContent).getTime();
-
-          for (let i = 1; i < trkpts.length; i++) {
-            const lat = parseFloat(trkpts[i].getAttribute("lat"));
-            const lon = parseFloat(trkpts[i].getAttribute("lon"));
-            const timeStr = trkpts[i].getElementsByTagName("time")[0]?.textContent;
-            
-            if (!timeStr) continue;
-            
-            const time = new Date(timeStr).getTime();
-            const timeDiff = (time - lastTime) / 1000;
-
-            // Haversine formula
-            const R = 6371; 
-            const dLat = (lat - lastLat) * Math.PI / 180;
-            const dLon = (lon - lastLon) * Math.PI / 180;
-            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                      Math.cos(lastLat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
-                      Math.sin(dLon/2) * Math.sin(dLon/2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            const dist = R * c;
-
-            if (dist > 0) {
-              const speed = (dist / (timeDiff / 3600));
-              if (speed > 3 && speed < 100 && timeDiff < 120) {
-                  totalDist += dist;
-                  totalMovingTime += timeDiff;
-              }
-            }
-
-            lastLat = lat;
-            lastLon = lon;
-            lastTime = time;
-          }
-
-          const calculatedAvgSpeed = totalDist / (totalMovingTime / 3600);
-          
-          if (isNaN(calculatedAvgSpeed) || calculatedAvgSpeed < 5) {
-               alert("無法從 GPX 計算有效速度，請確認檔案。");
-               setIsProcessing(false);
-               return;
-          }
-
-          setFileStatus({
-            fileName: file.name,
-            isReady: true,
-            fileType: 'gpx',
-            baseSpeed: parseFloat(calculatedAvgSpeed.toFixed(1))
-          });
-          setIsProcessing(false);
-
-        } catch (err) {
-          console.error(err);
-          alert("GPX 解析失敗，請確認檔案格式。");
-          setIsProcessing(false);
+    <!-- 3. 設定 Import Map (告訴瀏覽器去哪裡抓 React 套件) -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.292.0"
         }
-      };
-      reader.readAsText(file);
-    } else {
-      alert("不支援的檔案格式，請上傳 .gpx 或 .fit");
-      setIsProcessing(false);
     }
-  };
-
-  // 啟用示範模式
-  const useDemoData = () => {
-      setResults(null);
-      setFileStatus({
-          fileName: "Demo_Ride_Data.gpx (模擬數據)",
-          isReady: true,
-          fileType: 'demo',
-          baseSpeed: 28.5
-      });
-  };
-
-  // 2. 核心計算引擎 (點擊按鈕後觸發)
-  const generateReport = () => {
-    if (!fileStatus.isReady) return;
-
-    // A. 風阻係數修正
-    let windFactor = 0;
-    if (config.windDirection === 'tail') windFactor = config.windSpeed * 0.25; 
-    if (config.windDirection === 'head') windFactor = -(config.windSpeed * 0.4); 
-    if (config.windDirection === 'side') windFactor = -(config.windSpeed * 0.05);
-
-    const adjustedBaseSpeed = fileStatus.baseSpeed + windFactor;
-
-    // B. 分段計算 (加入疲勞衰退)
-    let currentTimeInHours = 0; 
-    let cumulativeDist = 0;
+    </script>
     
-    const [startH, startM] = config.startTime.split(':').map(Number);
-    const startDate = new Date();
-    startDate.setHours(startH, startM, 0, 0);
-
-    const segmentResults = SEGMENTS.map((seg) => {
-      const segDist = seg.end - seg.start;
-      
-      const fatigueDrop = (seg.start / 100) * 0.04; 
-      const fatigueFactor = Math.max(0.6, 1 - fatigueDrop); 
-
-      const predictedSpeed = Math.max(10, adjustedBaseSpeed * fatigueFactor); 
-      const durationHours = segDist / predictedSpeed;
-
-      currentTimeInHours += durationHours;
-      cumulativeDist = seg.end;
-
-      const totalCarbs = Math.ceil(durationHours * config.carbsPerHour);
-      const totalWater = Math.ceil(durationHours * config.waterPerHour);
-      const totalSodium = Math.ceil(durationHours * config.sodiumPerHour);
-
-      return {
-        ...seg,
-        dist: segDist.toFixed(1),
-        avgSpeed: predictedSpeed.toFixed(1),
-        duration: durationHours,
-        durationFormatted: formatHoursToTime(durationHours),
-        cumulativeTime: currentTimeInHours,
-        cumulativeTimeFormatted: formatHoursToTime(currentTimeInHours),
-        needs: {
-          carbs: totalCarbs,
-          water: totalWater,
-          sodium: totalSodium,
-          gels: Math.ceil(totalCarbs / config.carbsPerGel),
-          pills: Math.ceil(totalSodium / config.sodiumPerPill)
+    <!-- 設定 Tailwind 的字型 -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        
+        /* 簡單的淡入動畫 */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-      };
-    });
+        .animate-fade-in {
+            animation: fadeIn 0.5s ease-out forwards;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
 
-    // C. 停靠點計算
-    const stopResults = STOPS.map((stop) => {
-        const targetSeg = segmentResults.find(s => stop.km > s.start && stop.km <= s.end) || segmentResults[segmentResults.length - 1];
-        const distInSeg = stop.km - targetSeg.start;
-        const timeInSeg = distInSeg / parseFloat(targetSeg.avgSpeed);
-        
-        const prevSegIndex = segmentResults.findIndex(s => s.id === targetSeg.id) - 1;
-        const timeToStartOfSeg = prevSegIndex >= 0 ? segmentResults[prevSegIndex].cumulativeTime : 0;
-        
-        const totalHoursToStop = timeToStartOfSeg + timeInSeg;
-        const arrivalTime = new Date(startDate.getTime() + totalHoursToStop * 3600 * 1000);
-        
-        let foodType = FOOD_SUGGESTIONS.early;
-        if (stop.km > 150) foodType = FOOD_SUGGESTIONS.mid;
-        if (stop.km > 270) foodType = FOOD_SUGGESTIONS.late;
-        if (stop.type === "終點") foodType = FOOD_SUGGESTIONS.recovery;
+    <!-- 4. 主要程式碼邏輯 -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect } from 'react';
+        import { createRoot } from 'react-dom/client';
+        // 從 CDN 引入圖示
+        import { Upload, Wind, Utensils, Zap, Clock, Bike, AlertCircle, PlayCircle, FileText, CheckCircle } from 'lucide-react';
 
-        const prevStopKm = STOPS.find(s => s.km < stop.km && STOPS.indexOf(s) === STOPS.indexOf(stop) - 1)?.km || 0;
-        const distFromLastStop = stop.km - prevStopKm;
-        const segmentSpeed = parseFloat(targetSeg.avgSpeed); 
-        const timeFromLastStop = distFromLastStop / segmentSpeed;
+        // --- 這裡開始是原本的 React 程式碼 ---
 
-        const needsFromLast = {
-            carbs: Math.ceil(timeFromLastStop * config.carbsPerHour),
-            water: Math.ceil(timeFromLastStop * config.waterPerHour),
-            sodium: Math.ceil(timeFromLastStop * config.sodiumPerHour)
+        const SEGMENTS = [
+            { id: 1, name: "第一段：關渡 → 新竹代天府", start: 0, end: 75.5, note: "西濱起點，體力充沛" },
+            { id: 2, name: "第二段：新竹代天府 → 伸港寶天宮", start: 75.5, end: 168, note: "經苗栗後龍坡，進入台中" },
+            { id: 3, name: "第三段：伸港寶天宮 → 布袋大眾廟", start: 168, end: 275, note: "彰化雲林嘉義平路，無盡的黑暗路段" },
+            { id: 4, name: "第四段：布袋大眾廟 → 左營大義國中", start: 275, end: 367.6, note: "台南市區紅綠燈與最後的意志力" }
+        ];
+
+        const STOPS = [
+            { name: "新竹代天府", km: 75.5, type: "宮廟/便利商店" },
+            { name: "伸港寶天宮", km: 168, type: "宮廟/補給車" },
+            { name: "布袋大眾廟", km: 275, type: "宮廟/便利商店" },
+            { name: "楠梓 (麥當勞/超商)", km: 340, type: "市區補給點" },
+            { name: "終點 (大義國中)", km: 367.6, type: "終點" }
+        ];
+
+        const FOOD_SUGGESTIONS = {
+            early: "飯糰、三明治、香蕉 (固態為主)",
+            mid: "麵包、蛋糕、果膠、BCAA (固液並重)",
+            late: "可樂、流質食物、果膠、咖啡因 (快速吸收)",
+            recovery: "巧克力牛奶、豆漿、雞胸肉"
         };
 
-        return {
-            ...stop,
-            eta: arrivalTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false}),
-            totalHours: totalHoursToStop,
-            segmentTime: timeFromLastStop, 
-            needs: needsFromLast,
-            suggestion: foodType
-        };
-    });
+        const BeiGaoPlanner = () => {
+            const [config, setConfig] = useState({
+                carbsPerHour: 70,
+                waterPerHour: 600,
+                sodiumPerHour: 500,
+                carbsPerGel: 25,
+                sodiumPerPill: 300,
+                windDirection: 'tail',
+                windSpeed: 15,
+                startTime: "00:00",
+            });
 
-    // D. 總結
-    const totalTime = currentTimeInHours;
-    const totalCarbs = totalTime * config.carbsPerHour;
-    const totalWater = totalTime * config.waterPerHour;
-    const totalSodium = totalTime * config.sodiumPerHour;
+            const [fileStatus, setFileStatus] = useState({
+                fileName: null,
+                isReady: false,
+                fileType: null,
+                baseSpeed: 0
+            });
 
-    const fatigueWarning = stopResults.find(s => s.totalHours > 10)?.km || 250;
+            const [results, setResults] = useState(null);
+            const [activeTab, setActiveTab] = useState('summary');
+            const [isProcessing, setIsProcessing] = useState(false);
 
-    setResults({
-      segments: segmentResults,
-      stops: stopResults,
-      summary: {
-        totalTime: formatHoursToTime(totalTime),
-        totalTimeHours: totalTime.toFixed(1),
-        finishTime: new Date(startDate.getTime() + totalTime * 3600 * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false}),
-        avgSpeed: (367.6 / totalTime).toFixed(1),
-        totalNeeds: {
-          carbs: Math.ceil(totalCarbs),
-          water: Math.ceil(totalWater / 1000 * 10) / 10,
-          sodium: Math.ceil(totalSodium),
-          gels: Math.ceil(totalCarbs / config.carbsPerGel),
-          pills: Math.ceil(totalSodium / config.sodiumPerPill)
-        },
-        fatigueWarning
-      }
-    });
+            const handleFileUpload = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
 
-    // 自動捲動到結果區
-    setTimeout(() => {
-        document.getElementById('results-section')?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
-  };
+                setResults(null);
+                setIsProcessing(true);
 
-  const formatHoursToTime = (totalHours) => {
-    const hours = Math.floor(totalHours);
-    const minutes = Math.floor((totalHours - hours) * 60);
-    return `${hours}小時 ${minutes}分`;
-  };
+                const fileName = file.name.toLowerCase();
+                
+                if (fileName.endsWith('.fit')) {
+                    setTimeout(() => {
+                        setFileStatus({
+                            fileName: file.name,
+                            isReady: true,
+                            fileType: 'fit',
+                            baseSpeed: 30.0 
+                        });
+                        setIsProcessing(false);
+                    }, 800);
+                    
+                } else if (fileName.endsWith('.gpx')) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        try {
+                            const parser = new DOMParser();
+                            const xmlDoc = parser.parseFromString(e.target.result, "text/xml");
+                            const trkpts = xmlDoc.getElementsByTagName("trkpt");
+                            
+                            if (trkpts.length < 2) {
+                                alert("GPX 檔案無效或點數過少");
+                                setIsProcessing(false);
+                                return;
+                            }
 
-  const handleConfigChange = (e) => {
-    const { name, value } = e.target;
-    setConfig(prev => ({ ...prev, [name]: name.includes('Direction') || name.includes('startTime') ? value : Number(value) }));
-  };
+                            let totalDist = 0;
+                            let totalMovingTime = 0;
+                            let lastLat = parseFloat(trkpts[0].getAttribute("lat"));
+                            let lastLon = parseFloat(trkpts[0].getAttribute("lon"));
+                            let lastTime = new Date(trkpts[0].getElementsByTagName("time")[0].textContent).getTime();
 
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-12">
-      {/* Header */}
-      <header className="bg-blue-700 text-white p-6 shadow-lg">
-        <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center">
-          <div className="flex items-center gap-3 mb-4 md:mb-0">
-            <Bike size={32} />
-            <div>
-              <h1 className="text-2xl font-bold">北高 360 完賽配速與補給計算機</h1>
-              <p className="text-blue-200 text-sm">支援 Strava GPX / FIT 紀錄分析</p>
-            </div>
-          </div>
-          <div className="text-right text-blue-100 text-sm">
-            版本: 2.0 (支援手動生成)
-          </div>
-        </div>
-      </header>
+                            for (let i = 1; i < trkpts.length; i++) {
+                                const lat = parseFloat(trkpts[i].getAttribute("lat"));
+                                const lon = parseFloat(trkpts[i].getAttribute("lon"));
+                                const timeStr = trkpts[i].getElementsByTagName("time")[0]?.textContent;
+                                
+                                if (!timeStr) continue;
+                                
+                                const time = new Date(timeStr).getTime();
+                                const timeDiff = (time - lastTime) / 1000;
 
-      <main className="max-w-5xl mx-auto p-4 md:p-6 space-y-6">
-        
-        {/* Top Section: Upload & Settings */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-          
-          {/* Left Col: Upload & Wind */}
-          <div className="md:col-span-5 space-y-4">
-            {/* Upload Card */}
-            <div className={`p-5 rounded-xl shadow-sm border transition-all ${fileStatus.isReady ? 'bg-green-50 border-green-200' : 'bg-white border-slate-200'}`}>
-              <h2 className="text-lg font-semibold flex items-center gap-2 mb-4 text-slate-800">
-                <Upload size={20} className={fileStatus.isReady ? "text-green-600" : "text-blue-600"} />
-                1. 上傳騎乘紀錄
-              </h2>
-              
-              {!fileStatus.isReady ? (
-                <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center hover:bg-slate-50 transition-colors relative">
-                    <input 
-                      type="file" 
-                      accept=".gpx,.fit" 
-                      onChange={handleFileUpload} 
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                      disabled={isProcessing}
-                    />
-                    <div className="space-y-2">
-                      <div className="text-slate-400 mx-auto w-10 h-10 flex items-center justify-center">
-                        {isProcessing ? <Clock className="animate-spin text-blue-500" /> : <Upload />}
-                      </div>
-                      <p className="text-sm font-medium text-slate-600">
-                        {isProcessing ? "檔案分析中..." : "點擊上傳 GPX 或 FIT"}
-                      </p>
-                      <p className="text-xs text-slate-400">
-                        支援 Garmin/Strava 匯出之檔案
-                      </p>
-                    </div>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                    <div className="flex items-start gap-3 bg-white/60 p-3 rounded-lg border border-green-100">
-                        <FileText className="text-green-600 mt-1" size={20} />
+                                const R = 6371; 
+                                const dLat = (lat - lastLat) * Math.PI / 180;
+                                const dLon = (lon - lastLon) * Math.PI / 180;
+                                const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                                        Math.cos(lastLat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
+                                        Math.sin(dLon/2) * Math.sin(dLon/2);
+                                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                                const dist = R * c;
+
+                                if (dist > 0) {
+                                    const speed = (dist / (timeDiff / 3600));
+                                    if (speed > 3 && speed < 100 && timeDiff < 120) {
+                                        totalDist += dist;
+                                        totalMovingTime += timeDiff;
+                                    }
+                                }
+
+                                lastLat = lat;
+                                lastLon = lon;
+                                lastTime = time;
+                            }
+
+                            const calculatedAvgSpeed = totalDist / (totalMovingTime / 3600);
+                            
+                            if (isNaN(calculatedAvgSpeed) || calculatedAvgSpeed < 5) {
+                                alert("無法從 GPX 計算有效速度，請確認檔案。");
+                                setIsProcessing(false);
+                                return;
+                            }
+
+                            setFileStatus({
+                                fileName: file.name,
+                                isReady: true,
+                                fileType: 'gpx',
+                                baseSpeed: parseFloat(calculatedAvgSpeed.toFixed(1))
+                            });
+                            setIsProcessing(false);
+
+                        } catch (err) {
+                            console.error(err);
+                            alert("GPX 解析失敗，請確認檔案格式。");
+                            setIsProcessing(false);
+                        }
+                    };
+                    reader.readAsText(file);
+                } else {
+                    alert("不支援的檔案格式，請上傳 .gpx 或 .fit");
+                    setIsProcessing(false);
+                }
+            };
+
+            const useDemoData = () => {
+                setResults(null);
+                setFileStatus({
+                    fileName: "Demo_Ride_Data.gpx (模擬數據)",
+                    isReady: true,
+                    fileType: 'demo',
+                    baseSpeed: 28.5
+                });
+            };
+
+            const generateReport = () => {
+                if (!fileStatus.isReady) return;
+
+                let windFactor = 0;
+                if (config.windDirection === 'tail') windFactor = config.windSpeed * 0.25; 
+                if (config.windDirection === 'head') windFactor = -(config.windSpeed * 0.4); 
+                if (config.windDirection === 'side') windFactor = -(config.windSpeed * 0.05);
+
+                const adjustedBaseSpeed = fileStatus.baseSpeed + windFactor;
+
+                let currentTimeInHours = 0; 
+                let cumulativeDist = 0;
+                
+                const [startH, startM] = config.startTime.split(':').map(Number);
+                const startDate = new Date();
+                startDate.setHours(startH, startM, 0, 0);
+
+                const segmentResults = SEGMENTS.map((seg) => {
+                    const segDist = seg.end - seg.start;
+                    
+                    const fatigueDrop = (seg.start / 100) * 0.04; 
+                    const fatigueFactor = Math.max(0.6, 1 - fatigueDrop); 
+
+                    const predictedSpeed = Math.max(10, adjustedBaseSpeed * fatigueFactor); 
+                    const durationHours = segDist / predictedSpeed;
+
+                    currentTimeInHours += durationHours;
+                    cumulativeDist = seg.end;
+
+                    const totalCarbs = Math.ceil(durationHours * config.carbsPerHour);
+                    const totalWater = Math.ceil(durationHours * config.waterPerHour);
+                    const totalSodium = Math.ceil(durationHours * config.sodiumPerHour);
+
+                    return {
+                        ...seg,
+                        dist: segDist.toFixed(1),
+                        avgSpeed: predictedSpeed.toFixed(1),
+                        duration: durationHours,
+                        durationFormatted: formatHoursToTime(durationHours),
+                        cumulativeTime: currentTimeInHours,
+                        cumulativeTimeFormatted: formatHoursToTime(currentTimeInHours),
+                        needs: {
+                            carbs: totalCarbs,
+                            water: totalWater,
+                            sodium: totalSodium,
+                            gels: Math.ceil(totalCarbs / config.carbsPerGel),
+                            pills: Math.ceil(totalSodium / config.sodiumPerPill)
+                        }
+                    };
+                });
+
+                const stopResults = STOPS.map((stop) => {
+                    const targetSeg = segmentResults.find(s => stop.km > s.start && stop.km <= s.end) || segmentResults[segmentResults.length - 1];
+                    const distInSeg = stop.km - targetSeg.start;
+                    const timeInSeg = distInSeg / parseFloat(targetSeg.avgSpeed);
+                    
+                    const prevSegIndex = segmentResults.findIndex(s => s.id === targetSeg.id) - 1;
+                    const timeToStartOfSeg = prevSegIndex >= 0 ? segmentResults[prevSegIndex].cumulativeTime : 0;
+                    
+                    const totalHoursToStop = timeToStartOfSeg + timeInSeg;
+                    const arrivalTime = new Date(startDate.getTime() + totalHoursToStop * 3600 * 1000);
+                    
+                    let foodType = FOOD_SUGGESTIONS.early;
+                    if (stop.km > 150) foodType = FOOD_SUGGESTIONS.mid;
+                    if (stop.km > 270) foodType = FOOD_SUGGESTIONS.late;
+                    if (stop.type === "終點") foodType = FOOD_SUGGESTIONS.recovery;
+
+                    const prevStopKm = STOPS.find(s => s.km < stop.km && STOPS.indexOf(s) === STOPS.indexOf(stop) - 1)?.km || 0;
+                    const distFromLastStop = stop.km - prevStopKm;
+                    const segmentSpeed = parseFloat(targetSeg.avgSpeed); 
+                    const timeFromLastStop = distFromLastStop / segmentSpeed;
+
+                    const needsFromLast = {
+                        carbs: Math.ceil(timeFromLastStop * config.carbsPerHour),
+                        water: Math.ceil(timeFromLastStop * config.waterPerHour),
+                        sodium: Math.ceil(timeFromLastStop * config.sodiumPerHour)
+                    };
+
+                    return {
+                        ...stop,
+                        eta: arrivalTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false}),
+                        totalHours: totalHoursToStop,
+                        segmentTime: timeFromLastStop, 
+                        needs: needsFromLast,
+                        suggestion: foodType
+                    };
+                });
+
+                const totalTime = currentTimeInHours;
+                const totalCarbs = totalTime * config.carbsPerHour;
+                const totalWater = totalTime * config.waterPerHour;
+                const totalSodium = totalTime * config.sodiumPerHour;
+
+                const fatigueWarning = stopResults.find(s => s.totalHours > 10)?.km || 250;
+
+                setResults({
+                    segments: segmentResults,
+                    stops: stopResults,
+                    summary: {
+                        totalTime: formatHoursToTime(totalTime),
+                        totalTimeHours: totalTime.toFixed(1),
+                        finishTime: new Date(startDate.getTime() + totalTime * 3600 * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false}),
+                        avgSpeed: (367.6 / totalTime).toFixed(1),
+                        totalNeeds: {
+                            carbs: Math.ceil(totalCarbs),
+                            water: Math.ceil(totalWater / 1000 * 10) / 10,
+                            sodium: Math.ceil(totalSodium),
+                            gels: Math.ceil(totalCarbs / config.carbsPerGel),
+                            pills: Math.ceil(totalSodium / config.sodiumPerPill)
+                        },
+                        fatigueWarning
+                    }
+                });
+
+                setTimeout(() => {
+                    document.getElementById('results-section')?.scrollIntoView({ behavior: 'smooth' });
+                }, 100);
+            };
+
+            const formatHoursToTime = (totalHours) => {
+                const hours = Math.floor(totalHours);
+                const minutes = Math.floor((totalHours - hours) * 60);
+                return `${hours}小時 ${minutes}分`;
+            };
+
+            const handleConfigChange = (e) => {
+                const { name, value } = e.target;
+                setConfig(prev => ({ ...prev, [name]: name.includes('Direction') || name.includes('startTime') ? value : Number(value) }));
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-12">
+                <header className="bg-blue-700 text-white p-6 shadow-lg">
+                    <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center">
+                    <div className="flex items-center gap-3 mb-4 md:mb-0">
+                        <Bike size={32} />
                         <div>
-                            <div className="font-bold text-green-800">檔案讀取成功</div>
-                            <div className="text-sm text-green-700 break-all">{fileStatus.fileName}</div>
-                            <div className="text-xs text-green-600 mt-1">
-                                {fileStatus.fileType === 'fit' ? 
-                                    "(FIT 檔已模擬讀取，使用標準估計值)" : 
-                                    `(分析基準均速: ${fileStatus.baseSpeed} km/h)`}
+                        <h1 className="text-2xl font-bold">北高 360 完賽配速與補給計算機</h1>
+                        <p className="text-blue-200 text-sm">支援 Strava GPX / FIT 紀錄分析</p>
+                        </div>
+                    </div>
+                    <div className="text-right text-blue-100 text-sm">
+                        版本: 2.1 (單一檔案版)
+                    </div>
+                    </div>
+                </header>
+
+                <main className="max-w-5xl mx-auto p-4 md:p-6 space-y-6">
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+                    
+                    <div className="md:col-span-5 space-y-4">
+                        <div className={`p-5 rounded-xl shadow-sm border transition-all ${fileStatus.isReady ? 'bg-green-50 border-green-200' : 'bg-white border-slate-200'}`}>
+                        <h2 className="text-lg font-semibold flex items-center gap-2 mb-4 text-slate-800">
+                            <Upload size={20} className={fileStatus.isReady ? "text-green-600" : "text-blue-600"} />
+                            1. 上傳騎乘紀錄
+                        </h2>
+                        
+                        {!fileStatus.isReady ? (
+                            <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center hover:bg-slate-50 transition-colors relative">
+                                <input 
+                                type="file" 
+                                accept=".gpx,.fit" 
+                                onChange={handleFileUpload} 
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                disabled={isProcessing}
+                                />
+                                <div className="space-y-2">
+                                <div className="text-slate-400 mx-auto w-10 h-10 flex items-center justify-center">
+                                    {isProcessing ? <Clock className="animate-spin text-blue-500" /> : <Upload />}
+                                </div>
+                                <p className="text-sm font-medium text-slate-600">
+                                    {isProcessing ? "檔案分析中..." : "點擊上傳 GPX 或 FIT"}
+                                </p>
+                                <p className="text-xs text-slate-400">
+                                    支援 Garmin/Strava 匯出之檔案
+                                </p>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                <div className="flex items-start gap-3 bg-white/60 p-3 rounded-lg border border-green-100">
+                                    <FileText className="text-green-600 mt-1" size={20} />
+                                    <div>
+                                        <div className="font-bold text-green-800">檔案讀取成功</div>
+                                        <div className="text-sm text-green-700 break-all">{fileStatus.fileName}</div>
+                                        <div className="text-xs text-green-600 mt-1">
+                                            {fileStatus.fileType === 'fit' ? 
+                                                "(FIT 檔已模擬讀取，使用標準估計值)" : 
+                                                `(分析基準均速: ${fileStatus.baseSpeed} km/h)`}
+                                        </div>
+                                    </div>
+                                </div>
+                                <button 
+                                    onClick={() => {
+                                        setFileStatus({ fileName: null, isReady: false, fileType: null, baseSpeed: 0 });
+                                        setResults(null);
+                                    }}
+                                    className="text-xs text-slate-500 underline hover:text-slate-700 w-full text-center"
+                                >
+                                    重新上傳檔案
+                                </button>
+                            </div>
+                        )}
+
+                        {!fileStatus.isReady && !isProcessing && (
+                            <div className="mt-4 text-center">
+                            <span className="text-sm text-slate-500">或是</span>
+                            <button 
+                                onClick={useDemoData}
+                                className="ml-2 text-sm text-blue-600 font-semibold hover:underline"
+                            >
+                                使用範例數據試算
+                            </button>
+                            </div>
+                        )}
+                        </div>
+
+                        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                        <h2 className="text-lg font-semibold flex items-center gap-2 mb-4">
+                            <Wind size={20} className="text-blue-600" />
+                            2. 環境設定
+                        </h2>
+                        <div className="space-y-4">
+                            <div>
+                            <label className="text-sm font-medium text-slate-700 block mb-1">預估風向</label>
+                            <select 
+                                name="windDirection" 
+                                value={config.windDirection} 
+                                onChange={handleConfigChange}
+                                className="w-full p-2 border border-slate-300 rounded-md text-sm"
+                            >
+                                <option value="tail">北風 (大順風)</option>
+                                <option value="none">無風</option>
+                                <option value="side">側風</option>
+                                <option value="head">南風 (大逆風)</option>
+                            </select>
+                            </div>
+                            <div>
+                            <label className="text-sm font-medium text-slate-700 flex justify-between mb-1">
+                                <span>風速強度</span>
+                                <span className="text-blue-600">{config.windSpeed} km/h</span>
+                            </label>
+                            <input 
+                                type="range" 
+                                name="windSpeed" 
+                                min="0" max="40" 
+                                value={config.windSpeed} 
+                                onChange={handleConfigChange}
+                                className="w-full accent-blue-600" 
+                            />
+                            </div>
+                            <div>
+                            <label className="text-sm font-medium text-slate-700 block mb-1">出發時間</label>
+                            <input 
+                                type="time" 
+                                name="startTime" 
+                                value={config.startTime} 
+                                onChange={handleConfigChange}
+                                className="w-full p-2 border border-slate-300 rounded-md text-sm"
+                            />
                             </div>
                         </div>
-                    </div>
-                    <button 
-                        onClick={() => {
-                            setFileStatus({ fileName: null, isReady: false, fileType: null, baseSpeed: 0 });
-                            setResults(null);
-                        }}
-                        className="text-xs text-slate-500 underline hover:text-slate-700 w-full text-center"
-                    >
-                        重新上傳檔案
-                    </button>
-                </div>
-              )}
-
-              {!fileStatus.isReady && !isProcessing && (
-                 <div className="mt-4 text-center">
-                   <span className="text-sm text-slate-500">或是</span>
-                   <button 
-                    onClick={useDemoData}
-                    className="ml-2 text-sm text-blue-600 font-semibold hover:underline"
-                   >
-                     使用範例數據試算
-                   </button>
-                 </div>
-              )}
-            </div>
-
-            {/* Wind Settings */}
-            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-              <h2 className="text-lg font-semibold flex items-center gap-2 mb-4">
-                <Wind size={20} className="text-blue-600" />
-                2. 環境設定
-              </h2>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium text-slate-700 block mb-1">預估風向</label>
-                  <select 
-                    name="windDirection" 
-                    value={config.windDirection} 
-                    onChange={handleConfigChange}
-                    className="w-full p-2 border border-slate-300 rounded-md text-sm"
-                  >
-                    <option value="tail">北風 (大順風)</option>
-                    <option value="none">無風</option>
-                    <option value="side">側風</option>
-                    <option value="head">南風 (大逆風)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-slate-700 flex justify-between mb-1">
-                    <span>風速強度</span>
-                    <span className="text-blue-600">{config.windSpeed} km/h</span>
-                  </label>
-                  <input 
-                    type="range" 
-                    name="windSpeed" 
-                    min="0" max="40" 
-                    value={config.windSpeed} 
-                    onChange={handleConfigChange}
-                    className="w-full accent-blue-600" 
-                  />
-                </div>
-                 <div>
-                  <label className="text-sm font-medium text-slate-700 block mb-1">出發時間</label>
-                  <input 
-                    type="time" 
-                    name="startTime" 
-                    value={config.startTime} 
-                    onChange={handleConfigChange}
-                    className="w-full p-2 border border-slate-300 rounded-md text-sm"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Col: Nutrition Config & Action */}
-          <div className="md:col-span-7 flex flex-col gap-6">
-            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex-grow">
-               <h2 className="text-lg font-semibold flex items-center gap-2 mb-4">
-                <Utensils size={20} className="text-blue-600" />
-                3. 補給策略設定
-              </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                
-                {/* 需求設定 */}
-                <div className="space-y-4">
-                  <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">每小時需求</h3>
-                  <div>
-                    <label className="text-sm text-slate-700 block mb-1">碳水化合物 (g/hr)</label>
-                    <div className="flex items-center gap-2">
-                       <input 
-                        type="number" name="carbsPerHour" 
-                        value={config.carbsPerHour} onChange={handleConfigChange}
-                        className="w-20 p-2 border border-slate-300 rounded-md"
-                      />
-                      <span className="text-xs text-slate-500">建議 60-90g</span>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-sm text-slate-700 block mb-1">飲水 (ml/hr)</label>
-                     <div className="flex items-center gap-2">
-                      <input 
-                        type="number" name="waterPerHour" 
-                        value={config.waterPerHour} onChange={handleConfigChange}
-                        className="w-20 p-2 border border-slate-300 rounded-md"
-                      />
-                      <span className="text-xs text-slate-500">建議 500-800ml</span>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-sm text-slate-700 block mb-1">鈉/電解質 (mg/hr)</label>
-                     <div className="flex items-center gap-2">
-                      <input 
-                        type="number" name="sodiumPerHour" 
-                        value={config.sodiumPerHour} onChange={handleConfigChange}
-                        className="w-20 p-2 border border-slate-300 rounded-md"
-                      />
-                      <span className="text-xs text-slate-500">依排汗量調整</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 補給品規格 */}
-                <div className="space-y-4 bg-slate-50 p-4 rounded-lg">
-                   <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">補給品規格換算</h3>
-                   <div>
-                    <label className="text-sm text-slate-700 block mb-1">能量膠碳水含量 (g/包)</label>
-                    <input 
-                        type="number" name="carbsPerGel" 
-                        value={config.carbsPerGel} onChange={handleConfigChange}
-                        className="w-full p-2 border border-slate-300 rounded-md bg-white"
-                      />
-                   </div>
-                   <div>
-                    <label className="text-sm text-slate-700 block mb-1">電解質錠含鈉量 (mg/顆)</label>
-                    <input 
-                        type="number" name="sodiumPerPill" 
-                        value={config.sodiumPerPill} onChange={handleConfigChange}
-                        className="w-full p-2 border border-slate-300 rounded-md bg-white"
-                      />
-                   </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Generate Button Area */}
-            <div className="bg-slate-100 p-4 rounded-xl border border-slate-200 flex flex-col items-center justify-center text-center">
-                <button
-                    onClick={generateReport}
-                    disabled={!fileStatus.isReady}
-                    className={`
-                        w-full md:w-auto px-8 py-4 rounded-full font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all transform
-                        ${fileStatus.isReady 
-                            ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:scale-105 hover:shadow-blue-500/30 cursor-pointer' 
-                            : 'bg-slate-300 text-slate-500 cursor-not-allowed'}
-                    `}
-                >
-                    <PlayCircle size={24} />
-                    {results ? "重新計算數據" : "開始分析並產生報告"}
-                </button>
-                {!fileStatus.isReady && (
-                    <p className="text-xs text-slate-400 mt-2">請先完成步驟 1 上傳檔案</p>
-                )}
-            </div>
-
-          </div>
-        </div>
-
-        {/* Results Section */}
-        {results && (
-          <div id="results-section" className="space-y-6 animate-fade-in pt-6 border-t border-slate-200">
-             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2">
-                <div className="flex items-center gap-2">
-                    <CheckCircle className="text-green-500" />
-                    <h2 className="text-2xl font-bold text-slate-800">分析完成</h2>
-                </div>
-                <div className="flex bg-slate-100 p-1 rounded-lg self-start md:self-auto">
-                  {['summary', 'segments', 'stops'].map(tab => (
-                    <button
-                      key={tab}
-                      onClick={() => setActiveTab(tab)}
-                      className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
-                        activeTab === tab 
-                        ? 'bg-white text-blue-600 shadow-sm' 
-                        : 'text-slate-500 hover:text-slate-700'
-                      }`}
-                    >
-                      {tab === 'summary' && '總結概覽'}
-                      {tab === 'segments' && '分段配速'}
-                      {tab === 'stops' && '補給停靠'}
-                    </button>
-                  ))}
-                </div>
-             </div>
-
-             {/* Tab Content */}
-             
-             {/* 1. Summary View */}
-             {activeTab === 'summary' && (
-               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                 {/* Total Time Card */}
-                 <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white p-6 rounded-xl shadow-md">
-                    <div className="text-blue-200 text-sm font-medium mb-1">預估完賽時間</div>
-                    <div className="text-3xl font-bold mb-2">{results.summary.totalTime}</div>
-                    <div className="flex justify-between items-end">
-                      <div className="text-sm opacity-80">ETA: {results.summary.finishTime}</div>
-                      <Clock className="opacity-50" />
-                    </div>
-                 </div>
-
-                 {/* Speed Card */}
-                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <div className="text-slate-500 text-sm font-medium mb-1">全程平均均速</div>
-                    <div className="text-3xl font-bold text-slate-800 mb-2">{results.summary.avgSpeed} <span className="text-lg font-normal text-slate-500">km/h</span></div>
-                    <div className="flex items-center gap-1 text-xs text-orange-600">
-                       <AlertCircle size={12} />
-                       <span>{results.summary.fatigueWarning}k 後體力顯著下滑</span>
-                    </div>
-                 </div>
-
-                 {/* Nutrition Needs Card */}
-                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 md:col-span-2">
-                    <div className="text-slate-500 text-sm font-medium mb-3">總補給需求清單</div>
-                    <div className="grid grid-cols-3 gap-4 text-center">
-                      <div>
-                        <div className="text-2xl font-bold text-slate-800">{results.summary.totalNeeds.gels}</div>
-                        <div className="text-xs text-slate-500">包能量膠 ({results.summary.totalNeeds.carbs}g)</div>
-                      </div>
-                      <div>
-                        <div className="text-2xl font-bold text-slate-800">{results.summary.totalNeeds.pills}</div>
-                        <div className="text-xs text-slate-500">顆鹽錠 ({results.summary.totalNeeds.sodium}mg)</div>
-                      </div>
-                      <div>
-                        <div className="text-2xl font-bold text-slate-800">{results.summary.totalNeeds.water}L</div>
-                        <div className="text-xs text-slate-500">飲用水</div>
-                      </div>
-                    </div>
-                 </div>
-               </div>
-             )}
-
-             {/* 2. Segments View */}
-             {activeTab === 'segments' && (
-               <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                 <div className="overflow-x-auto">
-                   <table className="w-full text-sm text-left">
-                     <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
-                       <tr>
-                         <th className="px-6 py-4">路段資訊</th>
-                         <th className="px-6 py-4 text-center">距離</th>
-                         <th className="px-6 py-4 text-center">預估均速</th>
-                         <th className="px-6 py-4 text-center">騎乘時間</th>
-                         <th className="px-6 py-4">本段補給建議</th>
-                       </tr>
-                     </thead>
-                     <tbody className="divide-y divide-slate-100">
-                       {results.segments.map((seg) => (
-                         <tr key={seg.id} className="hover:bg-slate-50 transition-colors">
-                           <td className="px-6 py-4">
-                             <div className="font-bold text-slate-800">{seg.name}</div>
-                             <div className="text-xs text-slate-500 mt-1">{seg.note}</div>
-                           </td>
-                           <td className="px-6 py-4 text-center">
-                             <span className="font-mono font-medium">{seg.dist}</span> km
-                           </td>
-                           <td className="px-6 py-4 text-center">
-                             <span className={`font-mono font-bold ${parseFloat(seg.avgSpeed) < 20 ? 'text-red-500' : 'text-blue-600'}`}>
-                               {seg.avgSpeed}
-                             </span> km/h
-                           </td>
-                           <td className="px-6 py-4 text-center">
-                             <div className="font-medium">{seg.durationFormatted}</div>
-                             <div className="text-xs text-slate-400">累計: {seg.cumulativeTimeFormatted}</div>
-                           </td>
-                           <td className="px-6 py-4">
-                             <div className="flex flex-wrap gap-2 text-xs">
-                               <span className="bg-orange-100 text-orange-700 px-2 py-1 rounded-full">
-                                 碳水 {seg.needs.carbs}g ({seg.needs.gels}膠)
-                               </span>
-                               <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
-                                 水 {seg.needs.water}ml
-                               </span>
-                               <span className="bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
-                                 鹽錠 {seg.needs.pills}顆
-                               </span>
-                             </div>
-                           </td>
-                         </tr>
-                       ))}
-                     </tbody>
-                   </table>
-                 </div>
-               </div>
-             )}
-
-             {/* 3. Stops View */}
-             {activeTab === 'stops' && (
-               <div className="grid grid-cols-1 gap-4">
-                  {results.stops.map((stop, idx) => (
-                    <div key={idx} className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col md:flex-row gap-4 items-center">
-                        <div className="bg-blue-600 text-white rounded-lg p-3 w-full md:w-32 text-center shrink-0">
-                           <div className="text-xs opacity-80 font-medium">抵達時間</div>
-                           <div className="text-2xl font-bold">{stop.eta}</div>
-                        </div>
-                        
-                        <div className="flex-grow min-w-0">
-                           <div className="flex items-center gap-2 mb-1">
-                             <h3 className="font-bold text-lg text-slate-800">{stop.name}</h3>
-                             <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-600 border border-slate-200">
-                               {stop.km}km
-                             </span>
-                           </div>
-                           <div className="text-sm text-slate-500 mb-2">
-                             {stop.type} • 距離上一站 {(stop.segmentTime * parseFloat(results.segments[0].avgSpeed)).toFixed(1)}km (約 {formatHoursToTime(stop.segmentTime)})
-                           </div>
-                           
-                           {stop.name !== "終點 (大義國中)" && (
-                             <div className="bg-slate-50 p-3 rounded-lg text-sm border border-slate-100">
-                                <div className="font-semibold text-slate-700 mb-1 flex items-center gap-1">
-                                  <Utensils size={14} /> 建議補給內容
-                                </div>
-                                <div className="text-slate-600 mb-2">{stop.suggestion}</div>
-                                <div className="flex gap-3 text-xs text-slate-500">
-                                  <span>需補水: <strong>{stop.needs.water}ml</strong></span>
-                                  <span>需補碳: <strong>{stop.needs.carbs}g</strong></span>
-                                  <span>需補鈉: <strong>{stop.needs.sodium}mg</strong></span>
-                                </div>
-                             </div>
-                           )}
-                           
-                           {stop.name === "終點 (大義國中)" && (
-                             <div className="bg-green-50 text-green-800 p-3 rounded-lg text-sm font-medium">
-                               🎉 恭喜完賽！請立即補充恢復飲品（巧克力牛奶/豆漿）與優質蛋白質。
-                             </div>
-                           )}
                         </div>
                     </div>
-                  ))}
-               </div>
-             )}
 
-          </div>
-        )}
-      </main>
-    </div>
-  );
-};
+                    <div className="md:col-span-7 flex flex-col gap-6">
+                        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex-grow">
+                        <h2 className="text-lg font-semibold flex items-center gap-2 mb-4">
+                            <Utensils size={20} className="text-blue-600" />
+                            3. 補給策略設定
+                        </h2>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                            
+                            <div className="space-y-4">
+                            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">每小時需求</h3>
+                            <div>
+                                <label className="text-sm text-slate-700 block mb-1">碳水化合物 (g/hr)</label>
+                                <div className="flex items-center gap-2">
+                                <input 
+                                    type="number" name="carbsPerHour" 
+                                    value={config.carbsPerHour} onChange={handleConfigChange}
+                                    className="w-20 p-2 border border-slate-300 rounded-md"
+                                />
+                                <span className="text-xs text-slate-500">建議 60-90g</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="text-sm text-slate-700 block mb-1">飲水 (ml/hr)</label>
+                                <div className="flex items-center gap-2">
+                                <input 
+                                    type="number" name="waterPerHour" 
+                                    value={config.waterPerHour} onChange={handleConfigChange}
+                                    className="w-20 p-2 border border-slate-300 rounded-md"
+                                />
+                                <span className="text-xs text-slate-500">建議 500-800ml</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="text-sm text-slate-700 block mb-1">鈉/電解質 (mg/hr)</label>
+                                <div className="flex items-center gap-2">
+                                <input 
+                                    type="number" name="sodiumPerHour" 
+                                    value={config.sodiumPerHour} onChange={handleConfigChange}
+                                    className="w-20 p-2 border border-slate-300 rounded-md"
+                                />
+                                <span className="text-xs text-slate-500">依排汗量調整</span>
+                                </div>
+                            </div>
+                            </div>
 
-export default BeiGaoPlanner;
+                            <div className="space-y-4 bg-slate-50 p-4 rounded-lg">
+                            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">補給品規格換算</h3>
+                            <div>
+                                <label className="text-sm text-slate-700 block mb-1">能量膠碳水含量 (g/包)</label>
+                                <input 
+                                    type="number" name="carbsPerGel" 
+                                    value={config.carbsPerGel} onChange={handleConfigChange}
+                                    className="w-full p-2 border border-slate-300 rounded-md bg-white"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-sm text-slate-700 block mb-1">電解質錠含鈉量 (mg/顆)</label>
+                                <input 
+                                    type="number" name="sodiumPerPill" 
+                                    value={config.sodiumPerPill} onChange={handleConfigChange}
+                                    className="w-full p-2 border border-slate-300 rounded-md bg-white"
+                                />
+                            </div>
+                            </div>
+                        </div>
+                        </div>
+
+                        <div className="bg-slate-100 p-4 rounded-xl border border-slate-200 flex flex-col items-center justify-center text-center">
+                            <button
+                                onClick={generateReport}
+                                disabled={!fileStatus.isReady}
+                                className={`
+                                    w-full md:w-auto px-8 py-4 rounded-full font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all transform
+                                    ${fileStatus.isReady 
+                                        ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:scale-105 hover:shadow-blue-500/30 cursor-pointer' 
+                                        : 'bg-slate-300 text-slate-500 cursor-not-allowed'}
+                                `}
+                            >
+                                <PlayCircle size={24} />
+                                {results ? "重新計算數據" : "開始分析並產生報告"}
+                            </button>
+                            {!fileStatus.isReady && (
+                                <p className="text-xs text-slate-400 mt-2">請先完成步驟 1 上傳檔案</p>
+                            )}
+                        </div>
+
+                    </div>
+                    </div>
+
+                    {results && (
+                    <div id="results-section" className="space-y-6 animate-fade-in pt-6 border-t border-slate-200">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2">
+                            <div className="flex items-center gap-2">
+                                <CheckCircle className="text-green-500" />
+                                <h2 className="text-2xl font-bold text-slate-800">分析完成</h2>
+                            </div>
+                            <div className="flex bg-slate-100 p-1 rounded-lg self-start md:self-auto">
+                            {['summary', 'segments', 'stops'].map(tab => (
+                                <button
+                                key={tab}
+                                onClick={() => setActiveTab(tab)}
+                                className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                                    activeTab === tab 
+                                    ? 'bg-white text-blue-600 shadow-sm' 
+                                    : 'text-slate-500 hover:text-slate-700'
+                                }`}
+                                >
+                                {tab === 'summary' && '總結概覽'}
+                                {tab === 'segments' && '分段配速'}
+                                {tab === 'stops' && '補給停靠'}
+                                </button>
+                            ))}
+                            </div>
+                        </div>
+
+                        {activeTab === 'summary' && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white p-6 rounded-xl shadow-md">
+                                <div className="text-blue-200 text-sm font-medium mb-1">預估完賽時間</div>
+                                <div className="text-3xl font-bold mb-2">{results.summary.totalTime}</div>
+                                <div className="flex justify-between items-end">
+                                <div className="text-sm opacity-80">ETA: {results.summary.finishTime}</div>
+                                <Clock className="opacity-50" />
+                                </div>
+                            </div>
+
+                            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                <div className="text-slate-500 text-sm font-medium mb-1">全程平均均速</div>
+                                <div className="text-3xl font-bold text-slate-800 mb-2">{results.summary.avgSpeed} <span className="text-lg font-normal text-slate-500">km/h</span></div>
+                                <div className="flex items-center gap-1 text-xs text-orange-600">
+                                <AlertCircle size={12} />
+                                <span>{results.summary.fatigueWarning}k 後體力顯著下滑</span>
+                                </div>
+                            </div>
+
+                            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 md:col-span-2">
+                                <div className="text-slate-500 text-sm font-medium mb-3">總補給需求清單</div>
+                                <div className="grid grid-cols-3 gap-4 text-center">
+                                <div>
+                                    <div className="text-2xl font-bold text-slate-800">{results.summary.totalNeeds.gels}</div>
+                                    <div className="text-xs text-slate-500">包能量膠 ({results.summary.totalNeeds.carbs}g)</div>
+                                </div>
+                                <div>
+                                    <div className="text-2xl font-bold text-slate-800">{results.summary.totalNeeds.pills}</div>
+                                    <div className="text-xs text-slate-500">顆鹽錠 ({results.summary.totalNeeds.sodium}mg)</div>
+                                </div>
+                                <div>
+                                    <div className="text-2xl font-bold text-slate-800">{results.summary.totalNeeds.water}L</div>
+                                    <div className="text-xs text-slate-500">飲用水</div>
+                                </div>
+                                </div>
+                            </div>
+                        </div>
+                        )}
+
+                        {activeTab === 'segments' && (
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                            <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-left">
+                                <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
+                                <tr>
+                                    <th className="px-6 py-4">路段資訊</th>
+                                    <th className="px-6 py-4 text-center">距離</th>
+                                    <th className="px-6 py-4 text-center">預估均速</th>
+                                    <th className="px-6 py-4 text-center">騎乘時間</th>
+                                    <th className="px-6 py-4">本段補給建議</th>
+                                </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                {results.segments.map((seg) => (
+                                    <tr key={seg.id} className="hover:bg-slate-50 transition-colors">
+                                    <td className="px-6 py-4">
+                                        <div className="font-bold text-slate-800">{seg.name}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{seg.note}</div>
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <span className="font-mono font-medium">{seg.dist}</span> km
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <span className={`font-mono font-bold ${parseFloat(seg.avgSpeed) < 20 ? 'text-red-500' : 'text-blue-600'}`}>
+                                        {seg.avgSpeed}
+                                        </span> km/h
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <div className="font-medium">{seg.durationFormatted}</div>
+                                        <div className="text-xs text-slate-400">累計: {seg.cumulativeTimeFormatted}</div>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        <div className="flex flex-wrap gap-2 text-xs">
+                                        <span className="bg-orange-100 text-orange-700 px-2 py-1 rounded-full">
+                                            碳水 {seg.needs.carbs}g ({seg.needs.gels}膠)
+                                        </span>
+                                        <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
+                                            水 {seg.needs.water}ml
+                                        </span>
+                                        <span className="bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
+                                            鹽錠 {seg.needs.pills}顆
+                                        </span>
+                                        </div>
+                                    </td>
+                                    </tr>
+                                ))}
+                                </tbody>
+                            </table>
+                            </div>
+                        </div>
+                        )}
+
+                        {activeTab === 'stops' && (
+                        <div className="grid grid-cols-1 gap-4">
+                            {results.stops.map((stop, idx) => (
+                                <div key={idx} className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col md:flex-row gap-4 items-center">
+                                    <div className="bg-blue-600 text-white rounded-lg p-3 w-full md:w-32 text-center shrink-0">
+                                    <div className="text-xs opacity-80 font-medium">抵達時間</div>
+                                    <div className="text-2xl font-bold">{stop.eta}</div>
+                                    </div>
+                                    
+                                    <div className="flex-grow min-w-0">
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <h3 className="font-bold text-lg text-slate-800">{stop.name}</h3>
+                                        <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-600 border border-slate-200">
+                                        {stop.km}km
+                                        </span>
+                                    </div>
+                                    <div className="text-sm text-slate-500 mb-2">
+                                        {stop.type} • 距離上一站 {(stop.segmentTime * parseFloat(results.segments[0].avgSpeed)).toFixed(1)}km (約 {formatHoursToTime(stop.segmentTime)})
+                                    </div>
+                                    
+                                    {stop.name !== "終點 (大義國中)" && (
+                                        <div className="bg-slate-50 p-3 rounded-lg text-sm border border-slate-100">
+                                            <div className="font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                                            <Utensils size={14} /> 建議補給內容
+                                            </div>
+                                            <div className="text-slate-600 mb-2">{stop.suggestion}</div>
+                                            <div className="flex gap-3 text-xs text-slate-500">
+                                            <span>需補水: <strong>{stop.needs.water}ml</strong></span>
+                                            <span>需補碳: <strong>{stop.needs.carbs}g</strong></span>
+                                            <span>需補鈉: <strong>{stop.needs.sodium}mg</strong></span>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {stop.name === "終點 (大義國中)" && (
+                                        <div className="bg-green-50 text-green-800 p-3 rounded-lg text-sm font-medium">
+                                        🎉 恭喜完賽！請立即補充恢復飲品（巧克力牛奶/豆漿）與優質蛋白質。
+                                        </div>
+                                    )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        )}
+
+                    </div>
+                    )}
+                </main>
+                </div>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<BeiGaoPlanner />);
+    </script>
+</body>
+</html>
